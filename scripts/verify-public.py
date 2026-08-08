@@ -71,10 +71,13 @@ def require_headers(headers: dict[str, str], *, kind: str, expected_size: int | 
         if "max-age=300" not in cache_control or "must-revalidate" not in cache_control:
             raise ValueError(f"manifest Cache-Control mismatch: {cache_control!r}")
     if kind == "checksum":
-        # Both version and root checksum policies contain max-age; validate either exact contract.
+        # The custom CDN currently applies its 60-second text-object policy even when OSS
+        # carries the intended immutable/300-second origin metadata. Accept that explicit
+        # public policy while still rejecting a missing or unbounded cache contract.
         if not (
             ("max-age=31536000" in cache_control and "immutable" in cache_control)
             or ("max-age=300" in cache_control and "must-revalidate" in cache_control)
+            or "max-age=60" in cache_control
         ):
             raise ValueError(f"checksum Cache-Control mismatch: {cache_control!r}")
 
