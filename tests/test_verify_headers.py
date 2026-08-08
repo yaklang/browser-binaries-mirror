@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import sys
 import unittest
@@ -17,6 +18,24 @@ spec.loader.exec_module(verify_module)
 
 
 class PublicHeaderTests(unittest.TestCase):
+    def test_decompresses_gzip_http_body(self) -> None:
+        class Response:
+            headers = {"Content-Encoding": "gzip"}
+
+            def read(self) -> bytes:
+                return gzip.compress(b'{"latest":"151.0.7922.77"}')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        original = verify_module.request
+        self.addCleanup(setattr, verify_module, "request", original)
+        verify_module.request = lambda *args, **kwargs: Response()
+        self.assertEqual(b'{"latest":"151.0.7922.77"}', verify_module.get_bytes("https://example.test"))
+
     def test_cache_bust_can_pair_requests_with_one_token(self) -> None:
         manifest_url = verify_module.cache_bust("https://example.test/manifest.json", token=42)
         checksum_url = verify_module.cache_bust("https://example.test/manifest.json.sha256.txt", token=42)

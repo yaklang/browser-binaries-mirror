@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the official Stable Chrome for Testing release and four ZIPs."""
+"""Resolve only the current official Stable Chrome for Testing portable ZIPs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import urllib.request
 from typing import Any
 
 from mirrorlib import (
-    KNOWN_GOOD_MANIFEST_URL,
     PLATFORMS,
     SOURCE_MANIFEST_URL,
     artifact_url,
@@ -34,27 +33,28 @@ def fetch_json(url: str) -> dict[str, Any]:
 
 
 def select_release(metadata: dict[str, Any], requested_version: str | None) -> dict[str, Any]:
-    if requested_version:
-        version_key(requested_version)
-        matches = [item for item in metadata.get("versions", []) if item.get("version") == requested_version]
-        if len(matches) != 1:
-            raise ValueError(f"version {requested_version} was not found exactly once in official metadata")
-        return matches[0]
     stable = metadata.get("channels", {}).get("Stable")
     if not isinstance(stable, dict):
         raise ValueError("official metadata does not contain channels.Stable")
+    if requested_version:
+        version_key(requested_version)
+        if requested_version != stable.get("version"):
+            raise ValueError(
+                f"requested version {requested_version} is not the current official Stable "
+                f"version {stable.get('version')}"
+            )
     return stable
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", help="exact official four-part version to backfill")
+    parser.add_argument("--version", help="version guard; must equal the current official Stable version")
     parser.add_argument("--metadata-file", help="local official metadata fixture")
     parser.add_argument("--public-base-url", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    metadata_url = KNOWN_GOOD_MANIFEST_URL if args.version else SOURCE_MANIFEST_URL
+    metadata_url = SOURCE_MANIFEST_URL
     if args.metadata_file:
         with open(args.metadata_file, encoding="utf-8") as handle:
             metadata = json.load(handle)
@@ -73,7 +73,9 @@ def main() -> None:
     for upstream_platform, os_name, arch in PLATFORMS:
         source_url = downloads_by_platform.get(upstream_platform)
         if not isinstance(source_url, str):
-            raise ValueError(f"official metadata lacks chrome download for {upstream_platform}")
+            raise ValueError(f"official Stable metadata lacks chrome ZIP for {upstream_platform}")
+        if not source_url.endswith(".zip"):
+            raise ValueError(f"official Stable artifact for {upstream_platform} is not a ZIP")
         filename = f"chrome-cft-{version}-{os_name}-{arch}.zip"
         url = artifact_url(args.public_base_url, version, filename)
         artifacts.append(

@@ -9,7 +9,7 @@ import datetime as dt
 import subprocess
 from pathlib import Path
 
-from mirrorlib import load_json, sha256_file, write_json
+from mirrorlib import load_json, sha256_file, validate_zip_layout, write_json
 
 
 def download_one(artifact: dict, output_dir: Path) -> dict:
@@ -17,6 +17,8 @@ def download_one(artifact: dict, output_dir: Path) -> dict:
     subprocess.run(
         [
             "curl",
+            "--silent",
+            "--show-error",
             "--fail",
             "--location",
             "--retry",
@@ -31,6 +33,7 @@ def download_one(artifact: dict, output_dir: Path) -> dict:
         check=True,
     )
     subprocess.run(["unzip", "-tq", str(target)], check=True)
+    validate_zip_layout(target, artifact)
     digest = sha256_file(target)
     checksum_path = output_dir / f"{artifact['filename']}.sha256.txt"
     checksum_path.write_text(f"{digest}  {artifact['filename']}\n", encoding="utf-8")

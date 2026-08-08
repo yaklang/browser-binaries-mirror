@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "23 3 * * *"
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -43,6 +41,8 @@ jobs:
           import json
           release = json.load(open('/tmp/release.json'))
           assert len(release['artifacts']) == 4
+          assert release['channel'] == 'stable'
+          assert all(item['format'] == 'zip' for item in release['artifacts'])
           assert release['version'].count('.') == 3
           PY
       - name: Validate workflow syntax
@@ -61,4 +61,38 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Verify public manifest and latest binaries
-        run: python scripts/verify-public.py --public-base-url "$PUBLIC_BASE_URL" --download-latest
+        run: python scripts/verify-public.py --public-base-url "$PUBLIC_BASE_URL"
+
+  runtime-zip:
+    name: Extract and run ${{ matrix.os }}/${{ matrix.arch }} ZIP
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    needs: production-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            os: linux
+            arch: x64
+          - runner: windows-2025
+            os: windows
+            arch: x64
+          - runner: macos-15
+            os: macos
+            arch: arm64
+          - runner: macos-15-intel
+            os: macos
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Download, extract, and execute the browser
+        run: >-
+          python scripts/verify-runtime.py
+          --public-base-url "${{ env.PUBLIC_BASE_URL }}"
+          --os "${{ matrix.os }}"
+          --arch "${{ matrix.arch }}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gzip
 import hashlib
 import re
 import subprocess
@@ -14,7 +15,14 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from mirrorlib import PRODUCT_PREFIX, load_json, load_schema_and_validate, sha256_file, validate_release_entry
+from mirrorlib import (
+    PRODUCT_PREFIX,
+    load_json,
+    load_schema_and_validate,
+    sha256_file,
+    validate_release_entry,
+    validate_zip_layout,
+)
 
 
 def cache_bust(url: str, token: int | None = None) -> str:
@@ -42,7 +50,10 @@ def request(url: str, method: str = "GET", attempts: int = 5, cache_token: int |
 
 def get_bytes(url: str, cache_token: int | None = None) -> bytes:
     with request(url, cache_token=cache_token) as response:
-        return response.read()
+        data = response.read()
+        if response.headers.get("Content-Encoding", "").lower() == "gzip":
+            return gzip.decompress(data)
+        return data
 
 
 def head(url: str) -> dict[str, str]:
@@ -124,6 +135,7 @@ def download_and_hash(artifact: dict) -> None:
         )
         if target.stat().st_size != artifact["size"] or sha256_file(target) != artifact["sha256"]:
             raise ValueError(f"actual public content mismatch for {artifact['filename']}")
+        validate_zip_layout(target, artifact)
 
 
 def verify_release(entry: dict, download: bool) -> None:

@@ -2,11 +2,11 @@ name: Mirror Chrome for Testing Stable
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       version:
-        description: Optional exact four-part Chrome for Testing version to backfill
+        description: Optional version guard; must equal the current official Stable version
         required: false
         type: string
 
@@ -49,7 +49,7 @@ jobs:
             --public-base-url "$PUBLIC_BASE_URL" \
             --output dist/release.json
 
-      - name: Download and ZIP-test all platform artifacts
+      - name: Download and validate every portable ZIP
         run: |
           python scripts/download-and-verify.py \
             --release dist/release.json \

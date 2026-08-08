@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -22,11 +23,60 @@ SOURCE_MANIFEST_URL = (
     "https://googlechromelabs.github.io/chrome-for-testing/"
     "last-known-good-versions-with-downloads.json"
 )
-KNOWN_GOOD_MANIFEST_URL = (
-    "https://googlechromelabs.github.io/chrome-for-testing/"
-    "known-good-versions-with-downloads.json"
-)
 PRODUCT_PREFIX = "/browsers/chrome"
+
+ZIP_LAYOUTS = {
+    ("linux", "x64"): {
+        "root": "chrome-linux64/",
+        "executable": "chrome-linux64/chrome",
+        "required": (
+            "chrome-linux64/chrome_sandbox",
+            "chrome-linux64/icudtl.dat",
+            "chrome-linux64/resources.pak",
+            "chrome-linux64/locales/en-US.pak",
+        ),
+        "required_prefixes": (),
+    },
+    ("windows", "x64"): {
+        "root": "chrome-win64/",
+        "executable": "chrome-win64/chrome.exe",
+        "required": (
+            "chrome-win64/chrome.dll",
+            "chrome-win64/icudtl.dat",
+            "chrome-win64/resources.pak",
+            "chrome-win64/locales/en-US.pak",
+        ),
+        "required_prefixes": (),
+    },
+    ("macos", "arm64"): {
+        "root": "chrome-mac-arm64/",
+        "executable": (
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/"
+            "Google Chrome for Testing"
+        ),
+        "required": (
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/Info.plist",
+        ),
+        "required_prefixes": (
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/Frameworks/",
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/Resources/",
+        ),
+    },
+    ("macos", "x64"): {
+        "root": "chrome-mac-x64/",
+        "executable": (
+            "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/"
+            "Google Chrome for Testing"
+        ),
+        "required": (
+            "chrome-mac-x64/Google Chrome for Testing.app/Contents/Info.plist",
+        ),
+        "required_prefixes": (
+            "chrome-mac-x64/Google Chrome for Testing.app/Contents/Frameworks/",
+            "chrome-mac-x64/Google Chrome for Testing.app/Contents/Resources/",
+        ),
+    },
+}
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
@@ -60,6 +110,62 @@ def version_key(version: str) -> tuple[int, int, int, int]:
 
 def artifact_url(public_base_url: str, version: str, filename: str) -> str:
     return f"{public_base_url.rstrip('/')}{PRODUCT_PREFIX}/{version}/{filename}"
+
+
+def executable_path(os_name: str, arch: str) -> str:
+    try:
+        return str(ZIP_LAYOUTS[(os_name, arch)]["executable"])
+    except KeyError as exc:
+        raise ValueError(f"unsupported ZIP platform: {(os_name, arch)!r}") from exc
+
+
+def validate_zip_layout(path: str | Path, artifact: dict[str, Any]) -> None:
+    """Validate the portable upstream ZIP and every path README tells users to run."""
+
+    key = (artifact.get("os"), artifact.get("arch"))
+    if artifact.get("format") != "zip" or not str(artifact.get("filename", "")).endswith(".zip"):
+        raise ValueError(f"artifact is not a ZIP: {artifact.get('filename')!r}")
+    if not str(artifact.get("source_url", "")).endswith(".zip"):
+        raise ValueError(f"upstream artifact is not a ZIP: {artifact.get('source_url')!r}")
+    try:
+        layout = ZIP_LAYOUTS[key]
+    except KeyError as exc:
+        raise ValueError(f"unsupported ZIP platform: {key!r}") from exc
+
+    with zipfile.ZipFile(path) as archive:
+        corrupt = archive.testzip()
+        if corrupt is not None:
+            raise ValueError(f"corrupt ZIP member: {corrupt}")
+        infos = archive.infolist()
+        if not infos:
+            raise ValueError("ZIP is empty")
+        names = {info.filename for info in infos}
+        root = str(layout["root"])
+        for info in infos:
+            member = info.filename
+            member_path = Path(member)
+            if member.startswith("/") or ".." in member_path.parts:
+                raise ValueError(f"unsafe ZIP member path: {member!r}")
+            if not member.startswith(root):
+                raise ValueError(f"ZIP member is outside the single expected root {root!r}: {member!r}")
+
+        required = (str(layout["executable"]), *layout["required"])
+        missing = [member for member in required if member not in names]
+        if missing:
+            raise ValueError(f"ZIP lacks required runtime members: {missing}")
+        missing_prefixes = [
+            prefix
+            for prefix in layout["required_prefixes"]
+            if not any(name.startswith(prefix) for name in names)
+        ]
+        if missing_prefixes:
+            raise ValueError(f"ZIP lacks required runtime trees: {missing_prefixes}")
+
+        executable = archive.getinfo(str(layout["executable"]))
+        if executable.is_dir() or executable.file_size <= 0:
+            raise ValueError("ZIP browser executable is missing or empty")
+        if key[0] != "windows" and not ((executable.external_attr >> 16) & 0o111):
+            raise ValueError("ZIP browser entry does not carry an executable mode")
 
 
 def validate_release_entry(entry: dict[str, Any]) -> None:
