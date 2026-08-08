@@ -1,0 +1,64 @@
+name: Verify mirror
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      public_base_url:
+        description: Public CDN root URL
+        required: false
+        type: string
+        default: https://aliyun-oss.yaklang.com
+
+permissions:
+  contents: read
+
+env:
+  PUBLIC_BASE_URL: ${{ inputs.public_base_url || vars.PUBLIC_BASE_URL || 'https://aliyun-oss.yaklang.com' }}
+
+jobs:
+  local-contract:
+    name: Local contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Resolve the official Stable metadata
+        run: |
+          python scripts/resolve-release.py \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --output /tmp/release.json
+          python - <<'PY'
+          import json
+          release = json.load(open('/tmp/release.json'))
+          assert len(release['artifacts']) == 4
+          assert release['version'].count('.') == 3
+          PY
+      - name: Validate workflow syntax
+        uses: raven-actions/actionlint@v2
+
+  production-smoke:
+    name: Production integrity smoke test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Verify public manifest and latest binaries
+        run: python scripts/verify-public.py --public-base-url "$PUBLIC_BASE_URL" --download-latest

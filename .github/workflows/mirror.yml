@@ -1,0 +1,130 @@
+name: Mirror Chrome for Testing Stable
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Optional exact four-part Chrome for Testing version to backfill
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chrome-for-testing-stable-publisher
+  cancel-in-progress: false
+
+env:
+  PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || 'https://aliyun-oss.yaklang.com' }}
+  MANIFEST_MAX_VERSIONS: ${{ vars.MANIFEST_MAX_VERSIONS || '10' }}
+  OSS_ENDPOINT: https://oss-accelerate.aliyuncs.com
+  OSS_BUCKET: yaklang
+
+jobs:
+  publish:
+    name: Publish complete Stable release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+
+      - name: Resolve official release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          args=()
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            args+=(--version "$REQUESTED_VERSION")
+          fi
+          python scripts/resolve-release.py \
+            "${args[@]}" \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --output dist/release.json
+
+      - name: Download and ZIP-test all platform artifacts
+        run: |
+          python scripts/download-and-verify.py \
+            --release dist/release.json \
+            --output-dir dist/release \
+            --entry-output dist/release-entry.json
+
+      - name: Upload immutable objects through OSS acceleration
+        env:
+          OSS_KEY_ID: ${{ secrets.OSS_KEY_ID }}
+          OSS_KEY_SECRET: ${{ secrets.OSS_KEY_SECRET }}
+        run: |
+          python scripts/upload-oss.py \
+            --endpoint "$OSS_ENDPOINT" \
+            --bucket "$OSS_BUCKET" \
+            release \
+            --release-entry dist/release-entry.json \
+            --release-dir dist/release
+
+      - name: Verify newly published public object headers
+        run: |
+          python scripts/verify-public.py \
+            --public-base-url "$PUBLIC_BASE_URL" \
+            --release-entry dist/release-entry.json
+
+      - name: Fetch existing manifest if present
+        run: |
+          manifest_url="$PUBLIC_BASE_URL/browsers/chrome/manifest.json?mirror_build=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          status="$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+            --output dist/existing-manifest.json --write-out '%{http_code}' "$manifest_url")"
+          case "$status" in
+            200) ;;
+            404) rm -f dist/existing-manifest.json ;;
+            *) echo "cannot read existing manifest: HTTP $status" >&2; exit 1 ;;
+          esac
+
+      - name: Build and validate bounded manifest
+        run: |
+          existing_args=()
+          if [[ -f dist/existing-manifest.json ]]; then
+            existing_args+=(--existing-manifest dist/existing-manifest.json)
+          fi
+          python scripts/build-manifest.py \
+            --release-entry dist/release-entry.json \
+            "${existing_args[@]}" \
+            --max-versions "$MANIFEST_MAX_VERSIONS" \
+            --output dist/manifest.json \
+            --checksum-output dist/manifest.json.sha256.txt
+          python scripts/validate-manifest.py dist/manifest.json
+
+      - name: Publish manifest then its checksum
+        env:
+          OSS_KEY_ID: ${{ secrets.OSS_KEY_ID }}
+          OSS_KEY_SECRET: ${{ secrets.OSS_KEY_SECRET }}
+        run: |
+          python scripts/upload-oss.py \
+            --endpoint "$OSS_ENDPOINT" \
+            --bucket "$OSS_BUCKET" \
+            manifest \
+            --manifest dist/manifest.json \
+            --manifest-checksum dist/manifest.json.sha256.txt
+
+      - name: Publish summary
+        run: |
+          version="$(python -c 'import json; print(json.load(open("dist/release-entry.json"))["version"])')"
+          {
+            echo "## Chrome for Testing mirror"
+            echo
+            echo "Published and OSS-verified version: \`$version\`"
+            echo
+            echo "Manifest: $PUBLIC_BASE_URL/browsers/chrome/manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify-production:
+    name: Verify published content from the public CDN
+    needs: publish
+    uses: ./.github/workflows/verify.yml
+    with:
+      public_base_url: ${{ vars.PUBLIC_BASE_URL || 'https://aliyun-oss.yaklang.com' }}
