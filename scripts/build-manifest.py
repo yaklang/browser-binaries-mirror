@@ -27,6 +27,15 @@ def build_manifest(entry: dict, existing: dict | None, max_versions: int) -> dic
     versions.append(entry)
     versions.sort(key=lambda item: version_key(item["version"]), reverse=True)
     versions = versions[:max_versions]
+    if (
+        existing is not None
+        and existing.get("max_versions") == max_versions
+        and existing.get("latest") == versions[0]["version"]
+        and existing.get("versions") == versions
+    ):
+        # A no-change scheduled run must not rotate generated_at and create a
+        # needless manifest/checksum cache-coherency window at the CDN edge.
+        return existing
     manifest = {
         "schema_version": 1,
         "product": "chrome-for-testing",

@@ -72,6 +72,15 @@ def put_immutable(
 
 def put_mutable(bucket: oss2.Bucket, key: str, local_path: Path, content_type: str) -> None:
     digest = sha256_file(local_path)
+    try:
+        existing = bucket.head_object(key)
+    except oss2.exceptions.NoSuchKey:
+        existing = None
+    if existing is not None:
+        headers = normalized_headers(existing)
+        if int(existing.content_length) == local_path.stat().st_size and headers.get("x-oss-meta-sha256") == digest:
+            print(f"mutable object already matches, skipping: oss://{bucket.bucket_name}/{key}")
+            return
     bucket.put_object_from_file(
         key,
         str(local_path),

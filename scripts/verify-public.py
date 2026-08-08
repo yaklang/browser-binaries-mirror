@@ -17,18 +17,20 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from mirrorlib import PRODUCT_PREFIX, load_json, load_schema_and_validate, sha256_file, validate_release_entry
 
 
-def cache_bust(url: str) -> str:
+def cache_bust(url: str, token: int | None = None) -> str:
     parts = urlsplit(url)
-    query = parts.query + ("&" if parts.query else "") + urlencode({"mirror_verify": time.time_ns()})
+    query = parts.query + ("&" if parts.query else "") + urlencode({"mirror_verify": token or time.time_ns()})
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
-def request(url: str, method: str = "GET", attempts: int = 5):
+def request(url: str, method: str = "GET", attempts: int = 5, cache_token: int | None = None):
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             req = urllib.request.Request(
-                cache_bust(url), method=method, headers={"User-Agent": "browser-binaries-mirror-verifier/1"}
+                cache_bust(url, cache_token),
+                method=method,
+                headers={"User-Agent": "browser-binaries-mirror-verifier/1"},
             )
             return urllib.request.urlopen(req, timeout=60)
         except Exception as exc:  # noqa: BLE001 - retry network and transient CDN failures
@@ -38,8 +40,8 @@ def request(url: str, method: str = "GET", attempts: int = 5):
     raise RuntimeError(f"{method} {url} failed after {attempts} attempts: {last_error}")
 
 
-def get_bytes(url: str) -> bytes:
-    with request(url) as response:
+def get_bytes(url: str, cache_token: int | None = None) -> bytes:
+    with request(url, cache_token=cache_token) as response:
         return response.read()
 
 
@@ -140,14 +142,16 @@ def verify_manifest(public_base_url: str, schema: str, download_latest: bool) ->
     require_headers(head(checksum_url), kind="checksum")
 
     manifest_bytes = b""
-    for attempt in range(5):
-        manifest_bytes = get_bytes(manifest_url)
-        published_sha = parse_checksum(get_bytes(checksum_url), "manifest.json")
+    for attempt in range(7):
+        pair_token = time.time_ns()
+        manifest_bytes = get_bytes(manifest_url, cache_token=pair_token)
+        published_sha = parse_checksum(get_bytes(checksum_url, cache_token=pair_token), "manifest.json")
         if hashlib.sha256(manifest_bytes).hexdigest() == published_sha:
             break
-        if attempt == 4:
+        if attempt == 6:
             raise ValueError("manifest SHA-256 did not converge after publication retry window")
-        time.sleep(2**attempt)
+        print(f"manifest/checksum CDN generations differ; retrying pair {attempt + 2}/7 in 10 seconds")
+        time.sleep(10)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "manifest.json"

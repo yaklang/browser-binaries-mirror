@@ -17,6 +17,12 @@ spec.loader.exec_module(verify_module)
 
 
 class PublicHeaderTests(unittest.TestCase):
+    def test_cache_bust_can_pair_requests_with_one_token(self) -> None:
+        manifest_url = verify_module.cache_bust("https://example.test/manifest.json", token=42)
+        checksum_url = verify_module.cache_bust("https://example.test/manifest.json.sha256.txt", token=42)
+        self.assertTrue(manifest_url.endswith("mirror_verify=42"))
+        self.assertTrue(checksum_url.endswith("mirror_verify=42"))
+
     def test_accepts_custom_cdn_text_cache_policy(self) -> None:
         verify_module.require_headers(
             {

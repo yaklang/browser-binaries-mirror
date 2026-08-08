@@ -47,6 +47,7 @@ class ManifestTests(unittest.TestCase):
         repeated["mirrored_at"] = "2026-08-08T00:00:00Z"
         result = build_module.build_manifest(repeated, existing, 10)
         self.assertEqual("2026-08-01T00:00:00Z", result["versions"][0]["mirrored_at"])
+        self.assertEqual(existing, result)
 
     def test_rejects_changed_existing_version(self) -> None:
         existing = build_module.build_manifest(self.entry, None, 10)
