@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import importlib.util
 import sys
 import unittest
 import zipfile
@@ -12,6 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from mirrorlib import ZIP_LAYOUTS, validate_zip_layout  # noqa: E402
+
+runtime_spec = importlib.util.spec_from_file_location(
+    "verify_runtime_module", ROOT / "scripts" / "verify-runtime.py"
+)
+runtime_module = importlib.util.module_from_spec(runtime_spec)
+assert runtime_spec.loader is not None
+runtime_spec.loader.exec_module(runtime_module)
 
 
 class ZipLayoutTests(unittest.TestCase):
@@ -80,6 +88,12 @@ class ZipLayoutTests(unittest.TestCase):
                 self.make_zip("linux", "x64", unsafe=True),
                 self.artifact("linux", "x64"),
             )
+
+    def test_windows_runtime_uses_an_ephemeral_debugging_port(self) -> None:
+        command = runtime_module.windows_runtime_command(Path("chrome.exe"), Path("profile"))
+        self.assertIn("--headless=new", command)
+        self.assertIn("--remote-debugging-port=0", command)
+        self.assertEqual("about:blank", command[-1])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -33,6 +34,79 @@ def extract_zip(archive: Path, destination: Path) -> None:
         subprocess.run(["ditto", "-x", "-k", str(archive), str(destination)], check=True)
     else:
         subprocess.run(["unzip", "-q", str(archive), "-d", str(destination)], check=True)
+
+
+def windows_runtime_command(browser: Path, profile: Path) -> list[str]:
+    return [
+        str(browser),
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        f"--user-data-dir={profile}",
+        "--remote-debugging-port=0",
+        "about:blank",
+    ]
+
+
+def verify_browser_runtime(browser: Path, os_name: str, expected_version: str, profile: Path) -> str:
+    if os_name != "windows":
+        result = subprocess.run(
+            [str(browser), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        version_output = f"{result.stdout}\n{result.stderr}".strip()
+    else:
+        version_env = {**os.environ, "BROWSER_BINARY_PATH": str(browser)}
+        version = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-Item -LiteralPath $env:BROWSER_BINARY_PATH).VersionInfo.ProductVersion",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=version_env,
+        )
+        version_output = version.stdout.strip()
+
+        process = subprocess.Popen(
+            windows_runtime_command(browser, profile),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        devtools_port = profile / "DevToolsActivePort"
+        started = False
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if devtools_port.is_file() and devtools_port.stat().st_size > 0:
+                    started = True
+                    break
+                if process.poll() is not None:
+                    raise RuntimeError(f"Windows browser exited before startup with {process.returncode}")
+                time.sleep(0.25)
+        finally:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        if not started:
+            raise TimeoutError("Windows browser did not publish DevToolsActivePort within 30 seconds")
+
+    if expected_version not in version_output:
+        raise ValueError(
+            f"extracted browser did not report Stable {expected_version}: {version_output!r}"
+        )
+    return version_output
 
 
 def main() -> None:
@@ -85,18 +159,8 @@ def main() -> None:
         browser = extracted / executable_path(args.os, args.arch)
         if not browser.is_file():
             raise ValueError(f"documented browser path was not extracted: {browser}")
-        result = subprocess.run(
-            [str(browser), "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        version_output = f"{result.stdout}\n{result.stderr}".strip()
-        if latest["version"] not in version_output:
-            raise ValueError(
-                f"extracted browser did not report Stable {latest['version']}: {version_output!r}"
-            )
+        profile = temp_dir / "profile"
+        version_output = verify_browser_runtime(browser, args.os, latest["version"], profile)
         print(f"verified {args.os}/{args.arch}: {version_output}")
 
 
