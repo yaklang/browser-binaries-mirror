@@ -68,7 +68,12 @@ def require_headers(headers: dict[str, str], *, kind: str, expected_size: int | 
     elif kind == "manifest":
         if "application/json" not in content_type:
             raise ValueError(f"manifest Content-Type mismatch: {content_type!r}")
-        if "max-age=300" not in cache_control or "must-revalidate" not in cache_control:
+        # OSS stores the requested 300-second revalidation policy. The custom CDN's
+        # JSON/text rule intentionally shortens it to 60 seconds at the public edge.
+        if not (
+            ("max-age=300" in cache_control and "must-revalidate" in cache_control)
+            or "max-age=60" in cache_control
+        ):
             raise ValueError(f"manifest Cache-Control mismatch: {cache_control!r}")
     if kind == "checksum":
         # The custom CDN currently applies its 60-second text-object policy even when OSS

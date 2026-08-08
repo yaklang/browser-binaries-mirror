@@ -34,6 +34,16 @@ class PublicHeaderTests(unittest.TestCase):
                 kind="checksum",
             )
 
+    def test_accepts_custom_cdn_manifest_cache_policy(self) -> None:
+        verify_module.require_headers(
+            {
+                "content-length": "3338",
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": "max-age=60",
+            },
+            kind="manifest",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
