@@ -41,6 +41,36 @@ class ManifestTests(unittest.TestCase):
         result = build_module.build_manifest(self.entry, existing, 1)
         self.assertEqual([self.entry["version"]], [item["version"] for item in result["versions"]])
 
+    def entry_for(self, version: str) -> dict:
+        entry = deepcopy(self.entry)
+        original = entry["version"]
+        entry["version"] = version
+        for artifact in entry["artifacts"]:
+            for key in ("filename", "url", "checksum_url", "source_url"):
+                artifact[key] = artifact[key].replace(original, version)
+        return entry
+
+    def test_preserves_pinned_history_while_rolling_new_versions(self) -> None:
+        pinned = "115.0.5790.170"
+        manifest = build_module.build_manifest(self.entry_for(pinned), None, 3, [pinned])
+        for version in ("150.0.7871.124", "151.0.7922.77", "152.0.8000.1"):
+            manifest = build_module.build_manifest(self.entry_for(version), manifest, 3, [pinned])
+        self.assertEqual(
+            ["152.0.8000.1", "151.0.7922.77", pinned],
+            [item["version"] for item in manifest["versions"]],
+        )
+
+    def test_historical_config_contains_five_unique_major_versions(self) -> None:
+        versions = build_module.load_pinned_versions(
+            ROOT / "config" / "historical-stable-versions.json"
+        )
+        self.assertEqual(5, len(versions))
+        self.assertEqual([115, 120, 130, 140, 150], [int(v.split(".")[0]) for v in versions])
+
+    def test_manifest_capacity_must_leave_room_for_current_stable(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one slot"):
+            build_module.build_manifest(self.entry, None, 1, ["115.0.5790.170"])
+
     def test_idempotent_entry_preserves_mirrored_at(self) -> None:
         existing = build_module.build_manifest(self.entry, None, 10)
         repeated = deepcopy(self.entry)

@@ -1,0 +1,29 @@
+{
+  "versions": [
+    {
+      "major": 115,
+      "version": "115.0.5790.170",
+      "note": "First Chrome for Testing Stable generation"
+    },
+    {
+      "major": 120,
+      "version": "120.0.6099.109",
+      "note": "Major-version compatibility checkpoint"
+    },
+    {
+      "major": 130,
+      "version": "130.0.6723.116",
+      "note": "Major-version compatibility checkpoint"
+    },
+    {
+      "major": 140,
+      "version": "140.0.7339.207",
+      "note": "Major-version compatibility checkpoint"
+    },
+    {
+      "major": 150,
+      "version": "150.0.7871.124",
+      "note": "Major-version compatibility checkpoint"
+    }
+  ]
+}

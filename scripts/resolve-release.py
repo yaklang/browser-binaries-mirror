@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""Resolve only the current official Stable Chrome for Testing portable ZIPs."""
+"""Resolve current or explicitly requested historical Stable CfT ZIPs."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
+import urllib.parse
 import urllib.request
 from typing import Any
 
 from mirrorlib import (
+    KNOWN_GOOD_MANIFEST_URL,
     PLATFORMS,
     SOURCE_MANIFEST_URL,
+    VERSION_HISTORY_URL,
     artifact_url,
     version_key,
     write_json,
+)
+
+STABLE_HISTORY_PLATFORMS = {"linux", "mac", "mac_arm64", "win64"}
+VERSION_HISTORY_NAME_RE = re.compile(
+    r"^chrome/platforms/([^/]+)/channels/stable/versions/(\d+\.\d+\.\d+\.\d+)$"
 )
 
 
@@ -32,23 +41,67 @@ def fetch_json(url: str) -> dict[str, Any]:
     raise RuntimeError(f"failed to fetch {url}: {last_error}")
 
 
-def select_release(metadata: dict[str, Any], requested_version: str | None) -> dict[str, Any]:
+def current_stable(metadata: dict[str, Any]) -> dict[str, Any]:
     stable = metadata.get("channels", {}).get("Stable")
     if not isinstance(stable, dict):
         raise ValueError("official metadata does not contain channels.Stable")
-    if requested_version:
-        version_key(requested_version)
-        if requested_version != stable.get("version"):
-            raise ValueError(
-                f"requested version {requested_version} is not the current official Stable "
-                f"version {stable.get('version')}"
-            )
     return stable
+
+
+def stable_history_url(version: str) -> str:
+    query = urllib.parse.urlencode({"filter": f"version={version}", "page_size": "1000"})
+    return f"{VERSION_HISTORY_URL}?{query}"
+
+
+def stable_history_platforms(metadata: dict[str, Any], version: str) -> set[str]:
+    platforms: set[str] = set()
+    for item in metadata.get("versions", []):
+        if not isinstance(item, dict) or item.get("version") != version:
+            continue
+        match = VERSION_HISTORY_NAME_RE.fullmatch(str(item.get("name", "")))
+        if match and match.group(2) == version:
+            platforms.add(match.group(1))
+    return platforms
+
+
+def select_release(
+    current_metadata: dict[str, Any],
+    requested_version: str | None,
+    known_good_metadata: dict[str, Any] | None = None,
+    stable_history_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    stable = current_stable(current_metadata)
+    if not requested_version or requested_version == stable.get("version"):
+        return stable
+
+    version_key(requested_version)
+    if known_good_metadata is None or stable_history_metadata is None:
+        raise ValueError("historical version resolution requires CfT and Stable history metadata")
+
+    matches = [
+        item
+        for item in known_good_metadata.get("versions", [])
+        if isinstance(item, dict) and item.get("version") == requested_version
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"requested version {requested_version} is not a known-good CfT version")
+
+    stable_platforms = stable_history_platforms(stable_history_metadata, requested_version)
+    missing = sorted(STABLE_HISTORY_PLATFORMS - stable_platforms)
+    if missing:
+        raise ValueError(
+            f"requested version {requested_version} was not Stable on every mirrored platform; "
+            f"missing {missing}"
+        )
+    return matches[0]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", help="version guard; must equal the current official Stable version")
+    parser.add_argument(
+        "--version",
+        help="exact current or historical Stable four-part version; defaults to current Stable",
+    )
     parser.add_argument("--metadata-file", help="local official metadata fixture")
     parser.add_argument("--public-base-url", required=True)
     parser.add_argument("--output", required=True)
@@ -60,7 +113,20 @@ def main() -> None:
             metadata = json.load(handle)
     else:
         metadata = fetch_json(metadata_url)
-    selected = select_release(metadata, args.version)
+    known_good_metadata = None
+    stable_history_metadata = None
+    resolved_from = metadata_url
+    if args.version and args.version != current_stable(metadata).get("version"):
+        known_good_metadata = fetch_json(KNOWN_GOOD_MANIFEST_URL)
+        history_url = stable_history_url(args.version)
+        stable_history_metadata = fetch_json(history_url)
+        resolved_from = KNOWN_GOOD_MANIFEST_URL
+    selected = select_release(
+        metadata,
+        args.version,
+        known_good_metadata=known_good_metadata,
+        stable_history_metadata=stable_history_metadata,
+    )
     version = selected.get("version")
     version_key(version)
     revision = str(selected.get("revision", ""))
@@ -96,7 +162,7 @@ def main() -> None:
             "version": version,
             "revision": revision,
             "channel": "stable",
-            "resolved_from": metadata_url,
+            "resolved_from": resolved_from,
             "artifacts": artifacts,
         },
     )

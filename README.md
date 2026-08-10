@@ -71,6 +71,37 @@ if ($ActualHash -ne $Artifact.sha256) { throw "SHA-256 mismatch" }
 
 manifest 本身也有 [SHA-256 文件](https://aliyun-oss.yaklang.com/browsers/chrome/manifest.json.sha256.txt)。镜像没有额外数字签名，manifest 中的 `signature` 因此为 `null`；SHA-256 能发现内容变化，但不等同于签名身份验证。
 
+## 历史 Stable 大版本
+
+除当前 Stable 和最近更新外，manifest 固定保留下面 5 个历史大版本基线。每个基线都使用该大版本中较新的可用四段版本，并同时满足两个条件：Chrome for Testing 官方历史清单包含全部 4 个镜像平台的 ZIP，Chrome VersionHistory 也确认该版本曾在 Linux、macOS Intel、macOS arm64 和 Windows x64 上进入 Stable。
+
+| Stable 大版本 | 固定版本 | 用途 |
+| --- | --- | --- |
+| 115 | `115.0.5790.170` | Chrome for Testing 首个正式 Stable 世代 |
+| 120 | `120.0.6099.109` | 长期兼容性回归基线 |
+| 130 | `130.0.6723.116` | 长期兼容性回归基线 |
+| 140 | `140.0.7339.207` | 长期兼容性回归基线 |
+| 150 | `150.0.7871.124` | 长期兼容性回归基线 |
+
+下载历史版本时不要使用 `versions[0]`，而应按完整版本号查找：
+
+```bash
+version="140.0.7339.207"
+os="linux"
+arch="x64"
+
+artifact="$(curl -fsSL --compressed \
+  https://aliyun-oss.yaklang.com/browsers/chrome/manifest.json | \
+  jq -c --arg version "$version" --arg os "$os" --arg arch "$arch" \
+    '.versions[] | select(.version == $version) | .artifacts[] |
+     select(.os == $os and .arch == $arch)')"
+test -n "$artifact"
+url="$(jq -r .url <<<"$artifact")"
+sha256="$(jq -r .sha256 <<<"$artifact")"
+```
+
+根 manifest 最多保留 `max_versions` 条记录；上述 5 条是固定保留项，其余名额用于当前和最近的 Stable 四段版本。因此自动周更不会把这些历史基线淘汰。
+
 ## 解压位置与启动方式
 
 建议把版本号放进解压目录。升级时解压到新版本目录，验证成功后再让应用切换路径；不要覆盖正在运行的旧目录。浏览器用户数据应放在解压目录之外，并为并行任务使用不同的 `--user-data-dir`，避免多个进程争用同一份 profile。
@@ -168,6 +199,6 @@ Start-Process -FilePath $Browser -ArgumentList @(
 
 当前 Chrome Stable 的主版本周期约为 4 周，安全和小版本更新通常每周发布，因此具体四段版本号可能在主版本之间变化。从 Chrome 153（计划于 2026 年 9 月 8 日进入 Stable）开始，Google 已宣布 Stable 主版本改为每 2 周一次。发布时间也可能因安全修复或发布调整而变化。
 
-本镜像每天检查一次官方 Stable 元数据，所以正常情况下会在官方发布后的 24 小时内发现新版本。这里只跟随 Stable；手动指定版本也只能用于确认“当前官方 Stable 恰好是这个版本”，不能发布 Beta、Dev、Canary 或旧版本回填。
+本镜像每天检查一次官方 Stable 元数据，所以正常情况下会在官方发布后的 24 小时内发现新版本。自动任务只跟随当前 Stable；手动任务可以回填明确的四段历史版本，但解析器会同时检查 Chrome for Testing 的 known-good 清单和 Chrome VersionHistory 的全平台 Stable 记录。Beta、Dev、Canary 以及未在全部镜像平台进入过 Stable 的版本都会被拒绝。
 
-参考：[Chrome 发布渠道](https://www.chromium.org/chrome-release-channels/)、[两周发布周期公告](https://developer.chrome.com/blog/chrome-two-week-release/)、[Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/)。
+参考：[Chrome 发布渠道](https://www.chromium.org/chrome-release-channels/)、[两周发布周期公告](https://developer.chrome.com/blog/chrome-two-week-release/)、[Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing/)、[Chrome VersionHistory API](https://developer.chrome.com/docs/web-platform/versionhistory/reference)。

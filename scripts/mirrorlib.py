@@ -23,6 +23,13 @@ SOURCE_MANIFEST_URL = (
     "https://googlechromelabs.github.io/chrome-for-testing/"
     "last-known-good-versions-with-downloads.json"
 )
+KNOWN_GOOD_MANIFEST_URL = (
+    "https://googlechromelabs.github.io/chrome-for-testing/"
+    "known-good-versions-with-downloads.json"
+)
+VERSION_HISTORY_URL = (
+    "https://versionhistory.googleapis.com/v1/chrome/platforms/all/channels/stable/versions"
+)
 PRODUCT_PREFIX = "/browsers/chrome"
 
 ZIP_LAYOUTS = {

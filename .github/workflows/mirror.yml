@@ -6,9 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Optional version guard; must equal the current official Stable version
+        description: Optional exact current or historical Stable four-part version
         required: false
         type: string
+      backfill_historical_stable:
+        description: Publish the five retained historical Stable major versions and current Stable
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,9 +30,9 @@ env:
 
 jobs:
   publish:
-    name: Publish complete Stable release
+    name: Publish complete Stable release set
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -36,43 +41,77 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
 
-      - name: Resolve official release
+      - name: Resolve official release set
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
+          BACKFILL_HISTORICAL_STABLE: ${{ inputs.backfill_historical_stable }}
         run: |
-          args=()
-          if [[ -n "$REQUESTED_VERSION" ]]; then
-            args+=(--version "$REQUESTED_VERSION")
+          if [[ "$BACKFILL_HISTORICAL_STABLE" == "true" && -n "$REQUESTED_VERSION" ]]; then
+            echo "version and backfill_historical_stable cannot be used together" >&2
+            exit 1
           fi
-          python scripts/resolve-release.py \
-            "${args[@]}" \
-            --public-base-url "$PUBLIC_BASE_URL" \
-            --output dist/release.json
+          if [[ "$BACKFILL_HISTORICAL_STABLE" == "true" ]]; then
+            {
+              echo current
+              python - <<'PY'
+          import json
+          for item in json.load(open("config/historical-stable-versions.json"))["versions"]:
+              print(item["version"])
+          PY
+            } > /tmp/release-targets.txt
+          elif [[ -n "$REQUESTED_VERSION" ]]; then
+            printf '%s\n' "$REQUESTED_VERSION" > /tmp/release-targets.txt
+          else
+            echo current > /tmp/release-targets.txt
+          fi
 
-      - name: Download and validate every portable ZIP
+          index=0
+          while IFS= read -r target; do
+            release_dir="dist/releases/$(printf '%02d' "$index")"
+            mkdir -p "$release_dir"
+            args=()
+            if [[ "$target" != "current" ]]; then
+              args+=(--version "$target")
+            fi
+            python scripts/resolve-release.py \
+              "${args[@]}" \
+              --public-base-url "$PUBLIC_BASE_URL" \
+              --output "$release_dir/release.json"
+            index=$((index + 1))
+          done < /tmp/release-targets.txt
+
+      - name: Download and validate every portable ZIP in the release set
         run: |
-          python scripts/download-and-verify.py \
-            --release dist/release.json \
-            --output-dir dist/release \
-            --entry-output dist/release-entry.json
+          for release_file in dist/releases/*/release.json; do
+            release_dir="$(dirname "$release_file")"
+            python scripts/download-and-verify.py \
+              --release "$release_file" \
+              --output-dir "$release_dir/files" \
+              --entry-output "$release_dir/release-entry.json"
+          done
 
-      - name: Upload immutable objects through OSS acceleration
+      - name: Upload immutable release objects through OSS acceleration
         env:
           OSS_KEY_ID: ${{ secrets.OSS_KEY_ID }}
           OSS_KEY_SECRET: ${{ secrets.OSS_KEY_SECRET }}
         run: |
-          python scripts/upload-oss.py \
-            --endpoint "$OSS_ENDPOINT" \
-            --bucket "$OSS_BUCKET" \
-            release \
-            --release-entry dist/release-entry.json \
-            --release-dir dist/release
+          for entry in dist/releases/*/release-entry.json; do
+            release_dir="$(dirname "$entry")"
+            python scripts/upload-oss.py \
+              --endpoint "$OSS_ENDPOINT" \
+              --bucket "$OSS_BUCKET" \
+              release \
+              --release-entry "$entry" \
+              --release-dir "$release_dir/files"
+          done
 
-      - name: Verify newly published public object headers
+      - name: Verify newly published public object headers for every release
         run: |
-          python scripts/verify-public.py \
-            --public-base-url "$PUBLIC_BASE_URL" \
-            --release-entry dist/release-entry.json
+          for entry in dist/releases/*/release-entry.json; do
+            python scripts/verify-public.py \
+              --public-base-url "$PUBLIC_BASE_URL" \
+              --release-entry "$entry"
+          done
 
       - name: Fetch existing manifest if present
         run: |
@@ -85,18 +124,26 @@ jobs:
             *) echo "cannot read existing manifest: HTTP $status" >&2; exit 1 ;;
           esac
 
-      - name: Build and validate bounded manifest
+      - name: Build and validate bounded manifest with retained history
         run: |
-          existing_args=()
           if [[ -f dist/existing-manifest.json ]]; then
-            existing_args+=(--existing-manifest dist/existing-manifest.json)
+            cp dist/existing-manifest.json dist/manifest.json
           fi
-          python scripts/build-manifest.py \
-            --release-entry dist/release-entry.json \
-            "${existing_args[@]}" \
-            --max-versions "$MANIFEST_MAX_VERSIONS" \
-            --output dist/manifest.json \
-            --checksum-output dist/manifest.json.sha256.txt
+          for entry in dist/releases/*/release-entry.json; do
+            existing_args=()
+            if [[ -f dist/manifest.json ]]; then
+              existing_args+=(--existing-manifest dist/manifest.json)
+            fi
+            python scripts/build-manifest.py \
+              --release-entry "$entry" \
+              "${existing_args[@]}" \
+              --max-versions "$MANIFEST_MAX_VERSIONS" \
+              --pinned-versions-file config/historical-stable-versions.json \
+              --output dist/manifest.next.json \
+              --checksum-output dist/manifest.next.json.sha256.txt
+            mv dist/manifest.next.json dist/manifest.json
+            mv dist/manifest.next.json.sha256.txt dist/manifest.json.sha256.txt
+          done
           python scripts/validate-manifest.py dist/manifest.json
 
       - name: Publish manifest then its checksum
@@ -113,11 +160,14 @@ jobs:
 
       - name: Publish summary
         run: |
-          version="$(python -c 'import json; print(json.load(open("dist/release-entry.json"))["version"])')"
           {
             echo "## Chrome for Testing mirror"
             echo
-            echo "Published and OSS-verified version: \`$version\`"
+            echo "Published and OSS-verified versions:"
+            for entry in dist/releases/*/release-entry.json; do
+              version="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$entry")"
+              echo "- \`$version\`"
+            done
             echo
             echo "Manifest: $PUBLIC_BASE_URL/browsers/chrome/manifest.json"
           } >> "$GITHUB_STEP_SUMMARY"
