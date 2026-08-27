@@ -77,7 +77,9 @@ jobs:
       - name: Fetch existing manifest if present
         run: |
           manifest_url="$PUBLIC_BASE_URL/browsers/chrome/manifest.json?mirror_build=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          status="$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+          # The public CDN may dynamically gzip JSON. Ask curl to decode the
+          # negotiated representation before the manifest is merged locally.
+          status="$(curl --silent --show-error --location --compressed --retry 4 --retry-all-errors \
             --output dist/existing-manifest.json --write-out '%{http_code}' "$manifest_url")"
           case "$status" in
             200) ;;

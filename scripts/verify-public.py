@@ -51,7 +51,9 @@ def request(url: str, method: str = "GET", attempts: int = 5, cache_token: int |
 def get_bytes(url: str, cache_token: int | None = None) -> bytes:
     with request(url, cache_token=cache_token) as response:
         data = response.read()
-        if response.headers.get("Content-Encoding", "").lower() == "gzip":
+        if response.headers.get("Content-Encoding", "").lower() == "gzip" or data.startswith(
+            b"\x1f\x8b"
+        ):
             return gzip.decompress(data)
         return data
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import re
@@ -80,8 +81,13 @@ ZIP_LAYOUTS = {
 
 
 def load_json(path: str | Path) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as handle:
-        value = json.load(handle)
+    data = Path(path).read_bytes()
+    # CDN cache variants can occasionally retain a gzip representation even
+    # when the client requested identity encoding. Keep manifest recovery
+    # resilient while still validating the decoded JSON contract below.
+    if data.startswith(b"\x1f\x8b"):
+        data = gzip.decompress(data)
+    value = json.loads(data.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"expected a JSON object in {path}")
     return value
